@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="CalBot.CSharp/CalBot.CSharp.csproj" />
+  <Project Path="CalBot.FSharp/CalBot.FSharp.fsproj" />
+  <Project Path="CalBot.VBNet/CalBot.VBNet.vbproj" />
+</Solution>

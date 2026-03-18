@@ -153,6 +153,14 @@ class MoodEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Quick synchronous fallback mood — no LLM, no coroutine, just vibes.
+     * Used to immediately update the UI while the consensus pipeline runs.
+     */
+    fun quickFallbackMood(calBotId: Int, result: Int): String {
+        return generateFallbackMood(calBotId, result)
+    }
+
     private fun generateFallbackMood(calBotId: Int, result: Int): String {
         // Deterministic but varied — same result always gives same mood per CalBot
         val seed = (calBotId * 31 + result * 17).toLong()

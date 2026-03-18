@@ -19,4 +19,8 @@ interface BlockDao {
 
     @Query("SELECT COUNT(*) FROM blocks WHERE cal_bot_id = :calBotId")
     suspend fun getBlockCount(calBotId: Int): Int
+
+    /** Non-Flow query for the COBOL-generated BlockchainVerifier (Phase 9). */
+    @Query("SELECT * FROM blocks WHERE cal_bot_id = :calBotId ORDER BY timestamp ASC")
+    suspend fun getBlocksForCalBotList(calBotId: Int): List<BlockEntity>
 }

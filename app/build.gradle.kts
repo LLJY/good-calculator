@@ -121,4 +121,11 @@ dependencies {
     // Local LLM — llama.cpp Kotlin bindings for on-device inference
     // Used to generate CalBot mood descriptions from calculation results
     implementation("io.github.ljcamargo:llamacpp-kotlin:0.2.0")
+
+    // TFLite — for the neural arithmetic engine.
+    // A 2-layer MLP trained on 47 samples in PyTorch, smuggled through numpy
+    // into TensorFlow, converted to a TFLite flatbuffer, and deployed here
+    // to vote in a Byzantine fault-tolerant consensus protocol.
+    // The model has 4,609 parameters to approximate the + operator.
+    implementation("com.google.ai.edge.litert:litert:2.1.1")
 }

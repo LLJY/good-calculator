@@ -16,3 +16,9 @@ local.properties
 app/build
 zig/.zig-cache
 wasm/div-rust/target
+ml/.venv
+ml/weights/*.npy
+dotnet/**/bin
+dotnet/**/obj
+ada/*.o
+ada/*.ali

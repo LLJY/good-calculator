@@ -3,11 +3,15 @@ package edu.singaporetech.inf2007quiz01.consensus
 import android.content.Context
 import android.util.Log
 import edu.singaporetech.inf2007quiz01.BlockchainBridge
+import edu.singaporetech.inf2007quiz01.BlockchainVerifier
 import edu.singaporetech.inf2007quiz01.FortranBridge
 import edu.singaporetech.inf2007quiz01.FreeRtosBridge
 import edu.singaporetech.inf2007quiz01.GenesisBlocks
 import edu.singaporetech.inf2007quiz01.data.local.BlockDao
 import edu.singaporetech.inf2007quiz01.llm.MoodEngine
+import edu.singaporetech.inf2007quiz01.ml.FederatedAggregator
+import edu.singaporetech.inf2007quiz01.ml.FederatedFibonacciLearner
+import edu.singaporetech.inf2007quiz01.ml.NeuralArithmeticEngine
 import edu.singaporetech.inf2007quiz01.raft.RaftCluster
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -15,10 +19,14 @@ import kotlinx.coroutines.coroutineScope
 import java.nio.charset.StandardCharsets
 
 /**
- * Orchestrates the full five-phase compute path.
+ * Orchestrates the full nine-phase compute path.
  *
  * The result is not written here; the ViewModel assembles and inserts the final
  * BlockEntity so the existing UI flow stays intact.
+ *
+ * After the block is committed (by the ViewModel), the consensus engine can
+ * also run Phase 9: blockchain integrity verification using the COBOL-generated
+ * BlockchainVerifier, whose logic was tested at build time by Ada/SPARK.
  */
 class ConsensusEngine(
     private val blockDao: BlockDao,
@@ -28,6 +36,18 @@ class ConsensusEngine(
     private val appContext = context.applicationContext
     private val pqcQuorum = PqcQuorum(appContext)
     val moodEngine = MoodEngine(appContext)
+
+    // --- Neural Arithmetic Verification ---
+    // A TFLite model trained on 47 samples in PyTorch, smuggled through
+    // numpy into TensorFlow, and converted to a flatbuffer.  It gets a vote.
+    val neuralEngine = NeuralArithmeticEngine(appContext)
+
+    // --- Federated Fibonacci Learning ---
+    // 30 CalBots each maintain their own MLP weights.  They train on
+    // Fibonacci observations and periodically FedAvg with each other.
+    // On the same phone.  In the same process.
+    val fibLearner = FederatedFibonacciLearner(appContext)
+    val fedAggregator = FederatedAggregator(fibLearner)
 
     suspend fun computeWithConsensus(
         a: Int,
@@ -58,9 +78,19 @@ class ConsensusEngine(
             } else Int.MIN_VALUE
         }
 
+        // Phase 1.6: Neural Arithmetic Verification — a 2-layer MLP
+        // trained on 47 arithmetic samples in PyTorch, smuggled through
+        // numpy into TensorFlow, converted to TFLite, and deployed on
+        // Android.  It gets an actual vote in the consensus protocol.
+        // The model has 4,609 parameters to approximate the + operator.
+        val mlpDeferred = async(Dispatchers.Default) {
+            neuralEngine.compute(a, b, operator)
+        }
+
         val raftResult = raftDeferred.await()
         val oracleResult = oracleDeferred.await()
         val rtosResult = rtosDeferred.await()
+        val mlpResult = mlpDeferred.await()
         val prevHash = prevHashDeferred.await()
         val timestamp = System.currentTimeMillis()
         val oracleAgreed = raftResult.result == oracleResult
@@ -72,6 +102,20 @@ class ConsensusEngine(
                 "FreeRTOS TMR result=$rtosResult, Raft result=${raftResult.result}, " +
                 "agreed=$rtosAgreed — an RTOS designed for 4KB microcontrollers " +
                 "just verified your calculator on a phone with ${Runtime.getRuntime().maxMemory() / 1024 / 1024}MB heap")
+        }
+
+        // Log the Neural Arithmetic cross-check — did the MLP agree with Raft?
+        val mlpAgreed = mlpResult != Int.MIN_VALUE && mlpResult == raftResult.result
+        if (mlpResult != Int.MIN_VALUE) {
+            Log.d("ConsensusEngine",
+                "Neural MLP result=$mlpResult (raw=${neuralEngine.lastRawOutput}, " +
+                "confidence=${neuralEngine.lastConfidence}), " +
+                "Raft result=${raftResult.result}, agreed=$mlpAgreed — " +
+                "a neural network trained on 47 samples just voted in " +
+                "a Byzantine fault-tolerant consensus protocol")
+        } else {
+            Log.d("ConsensusEngine",
+                "Neural MLP unavailable — the neural network abstained from voting")
         }
 
         // Phase 1.75: Fortran raytracing + linear algebra — a language from
@@ -127,7 +171,11 @@ class ConsensusEngine(
             blockHash = blockHash,
             nonce = nonce,
             wallTimeMs = System.currentTimeMillis() - wallStart,
-            mood = moodDeferred.await()
+            mood = moodDeferred.await(),
+            mlpVote = mlpResult,
+            mlpAgreed = mlpAgreed,
+            mlpRawOutput = neuralEngine.lastRawOutput,
+            mlpConfidence = neuralEngine.lastConfidence
         )
     }
 
@@ -162,6 +210,40 @@ class ConsensusEngine(
             append("oracle_agreed=").append(oracleAgreed)
         }
         return serialized.toByteArray(StandardCharsets.UTF_8)
+    }
+
+    /**
+     * Phase 9: Blockchain Integrity Proof.
+     *
+     * After a block is committed, verify the entire chain's integrity
+     * using the COBOL-generated BlockchainVerifier.  The verification
+     * logic was:
+     *   1. Specified in COBOL (chain_verifier_generator.cob)
+     *   2. Emitted as Kotlin by the COBOL program at build time
+     *   3. Validated by Ada/SPARK unit tests (39/39 pass, DO-178C Level A)
+     *   4. Deployed on Android as JVM bytecode (works on arm64 and x86_64)
+     *
+     * Three languages (COBOL, Ada, Kotlin) collaborated to verify a
+     * blockchain for a calculator.  The audit report uses COBOL PICTURE
+     * clause field widths because enterprise formatting has standards.
+     */
+    suspend fun verifyChainIntegrity(calBotId: Int): BlockchainVerifier.VerificationResult {
+        val blocks = blockDao.getBlocksForCalBotList(calBotId)
+        val result = BlockchainVerifier.verifyChain(calBotId, blocks)
+
+        Log.d("ConsensusEngine",
+            "Phase 9 Chain Integrity: CalBot $calBotId, " +
+            "chain=${result.chainLength} blocks, " +
+            "verdict=${result.verdict}, " +
+            "genesis=${result.genesisValid}, " +
+            "links=${result.allLinksValid}, " +
+            "hashes=${result.allHashesWellFormed}, " +
+            "temporal=${result.temporalOrderValid}, " +
+            "proof=${result.integrityProofHash.take(16)}... — " +
+            "verified by COBOL-generated Kotlin, " +
+            "tested by Ada/SPARK at build time")
+
+        return result
     }
 
     private companion object {

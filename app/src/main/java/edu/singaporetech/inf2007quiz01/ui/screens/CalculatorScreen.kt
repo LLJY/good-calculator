@@ -93,6 +93,7 @@ fun CalculatorScreen(
     displayText: String,
     history: List<String>,
     isApiEnabled: Boolean,
+    mood: String = "awaiting consciousness",
     onButtonClick: (String) -> Unit,
     onToggleApi: (Boolean) -> Unit
 ) {
@@ -137,17 +138,24 @@ fun CalculatorScreen(
         color = MaterialTheme.colorScheme.background
     ) {
         Column {
-            /* CalBot name header with Fortran-raytraced GL sphere */
+            /* CalBot name header with mood and Fortran-raytraced GL sphere */
             Row(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 modifier = Modifier.padding(bottom = 4.dp)
             ) {
-                Text(
-                    text = calBotName,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = calBotName,
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Text(
+                        text = mood,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
                 // 48x48dp OpenGL ES 2.0 surface rendering a Fortran-raytraced
                 // sphere with GLSL CRT scanline + chromatic aberration shaders
                 SphereGLView(

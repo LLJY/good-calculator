@@ -97,6 +97,7 @@ fun CalBotApp() {
                     displayText = calculatorVM.displayText,
                     history = calculatorVM.history,
                     isApiEnabled = calculatorVM.isApiEnabled,
+                    mood = calculatorVM.currentMood,
                     onButtonClick = { calculatorVM.onButtonClick(it) },
                     onToggleApi = { calculatorVM.toggleApi(it) }
                 )
