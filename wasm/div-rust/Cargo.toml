@@ -1,0 +1,17 @@
+[package]
+name = "calbot-div"
+version = "0.1.0"
+edition = "2021"
+
+# Division microservice for the most over-engineered calculator.
+# Rust was removed from the native layer (replaced by Zig) but
+# returns here as a WASM module. The revenge arc.
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"      # optimize for size
+lto = true
+strip = true
+panic = "abort"
