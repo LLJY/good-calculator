@@ -9,54 +9,30 @@ fn envOrNull(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
     return std.process.getEnvVarOwned(allocator, name) catch null;
 }
 
-fn collectWasm3Sources(b: *std.Build) []const []const u8 {
-    var files = std.ArrayList([]const u8).init(b.allocator);
-
-    var dir = std.fs.cwd().openDir("deps/wasm3/source", .{ .iterate = true }) catch {
-        @panic("deps/wasm3/source is missing; populate the wasm3 submodule first");
-    };
-    defer dir.close();
-
-    var it = dir.iterate();
-    while (it.next() catch @panic("failed to iterate deps/wasm3/source")) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".c")) continue;
-
-        const full_path = b.pathJoin(&.{ "deps/wasm3/source", entry.name });
-        files.append(full_path) catch @panic("out of memory while collecting wasm3 sources");
-    }
-
-    if (files.items.len == 0) {
-        @panic("deps/wasm3/source contains no .c files; populate the wasm3 submodule first");
-    }
-
-    std.mem.sort([]const u8, files.items, {}, struct {
-        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
-            return std.mem.lessThan(u8, lhs, rhs);
-        }
-    }.lessThan);
-
-    return files.toOwnedSlice() catch @panic("out of memory while finalising wasm3 source list");
-}
-
 pub fn build(b: *std.Build) void {
     const arch = b.option(AndroidArch, "android-arch", "Android target architecture: arm64 or x86_64") orelse .arm64;
     const android_api = b.option(u32, "android-api", "Android API level to target") orelse 24;
 
     const optimize: std.builtin.OptimizeMode = .ReleaseFast;
 
+    const api_semver: std.SemanticVersion = .{
+        .major = android_api,
+        .minor = 0,
+        .patch = 0,
+    };
+
     const target_query: std.Target.Query = switch (arch) {
         .arm64 => .{
             .cpu_arch = .aarch64,
             .os_tag = .linux,
             .abi = .android,
-            .os_version_min = .{ .android = android_api },
+            .os_version_min = .{ .semver = api_semver },
         },
         .x86_64 => .{
             .cpu_arch = .x86_64,
             .os_tag = .linux,
             .abi = .android,
-            .os_version_min = .{ .android = android_api },
+            .os_version_min = .{ .semver = api_semver },
         },
     };
     const target = b.resolveTargetQuery(target_query);
@@ -80,36 +56,86 @@ pub fn build(b: *std.Build) void {
         .x86_64 => "deps/openssl/lib-x86_64",
     };
 
-    const lib = b.addSharedLibrary(.{
-        .name = "calbot_zig",
+    // Collect wasm3 C source files
+    var wasm3_files = std.ArrayListUnmanaged([]const u8).initCapacity(b.allocator, 16) catch @panic("OOM");
+    {
+        var dir = std.fs.cwd().openDir("deps/wasm3/source", .{ .iterate = true }) catch {
+            @panic("deps/wasm3/source is missing; populate the wasm3 submodule first");
+        };
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch @panic("failed to iterate deps/wasm3/source")) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".c")) continue;
+            // Skip WASI, tracer, and uvwasi files — not needed on Android
+            // and they reference stdout/WASI headers we don't have
+            if (std.mem.indexOf(u8, entry.name, "wasi") != null) continue;
+            if (std.mem.indexOf(u8, entry.name, "tracer") != null) continue;
+            if (std.mem.indexOf(u8, entry.name, "libc") != null) continue;
+            const full_path = b.pathJoin(&.{ "deps/wasm3/source", entry.name });
+            wasm3_files.append(b.allocator, full_path) catch @panic("OOM");
+        }
+    }
+
+    // NDK sysroot paths for libc
+    const ndk_lib_dir = b.pathJoin(&.{
+        android_ndk, "toolchains", "llvm", "prebuilt", "linux-x86_64", "sysroot", "usr", "lib",
+        switch (arch) {
+            .arm64 => "aarch64-linux-android",
+            .x86_64 => "x86_64-linux-android",
+        },
+    });
+    const ndk_api_lib_dir = b.pathJoin(&.{
+        ndk_lib_dir,
+        b.fmt("{d}", .{android_api}),
+    });
+
+    // Point Zig at the NDK's libc via --libc flag
+    const libc_conf = switch (arch) {
+        .arm64 => "libc-arm64.conf",
+        .x86_64 => "libc-x86_64.conf",
+    };
+    b.libc_file = libc_conf;
+
+    // Create root module for the Zig library
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/jni_exports.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
-    // Android wants PIC shared objects; Zig already does the right thing for
-    // shared libraries, but being explicit keeps the cursed intent readable.
-    lib.pic = true;
-    lib.strip = true;
-    lib.linkLibC();
+    root_module.addIncludePath(.{ .cwd_relative = ndk_sysroot });
+    root_module.addIncludePath(.{ .cwd_relative = ndk_target_include });
+    root_module.addIncludePath(b.path("deps/openssl/include"));
+    root_module.addIncludePath(b.path("deps/wasm3"));
+    root_module.addIncludePath(b.path("deps/wasm3/source"));
 
-    lib.root_module.addIncludePath(.{ .cwd_relative = ndk_sysroot });
-    lib.root_module.addIncludePath(.{ .cwd_relative = ndk_target_include });
-    lib.root_module.addIncludePath(b.path("deps/openssl/include"));
-    lib.root_module.addIncludePath(b.path("deps/wasm3"));
-    lib.root_module.addIncludePath(b.path("deps/wasm3/source"));
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "calbot_zig",
+        .root_module = root_module,
+    });
 
     lib.addCSourceFiles(.{
-        .files = collectWasm3Sources(b),
+        .files = wasm3_files.toOwnedSlice(b.allocator) catch @panic("OOM"),
         .flags = &.{
             "-std=c11",
             "-DM3_NO_DEBUG=1",
+            "-Dd_m3HasWASI=0", // No WASI — no stdout dependency
+            "-Dd_m3HasTracer=0", // No tracer output
+            "-Dd_m3HasMetaWASI=0", // No meta WASI
         },
     });
 
-    // OpenSSL is supplied as a prebuilt static archive so the shared object can
-    // drag its post-quantum baggage around without depending on a system copy.
     lib.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ openssl_lib_dir, "libcrypto.a" }) });
+
+    // Link against the NDK sysroot libc
+    lib.addLibraryPath(.{ .cwd_relative = ndk_api_lib_dir });
+    lib.addLibraryPath(.{ .cwd_relative = ndk_lib_dir });
+    lib.linkSystemLibrary2("c", .{ .preferred_link_mode = .dynamic });
+    lib.linkSystemLibrary2("dl", .{ .preferred_link_mode = .dynamic });
+    lib.linkSystemLibrary2("log", .{ .preferred_link_mode = .dynamic });
 
     b.installArtifact(lib);
 }

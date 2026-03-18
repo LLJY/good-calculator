@@ -72,7 +72,7 @@ pub fn mineBlock(block_data: []const u8, difficulty: u32) u64 {
 
     var nonce: u64 = 0;
     while (true) : (nonce += 1) {
-        std.mem.writeInt(u64, candidate[block_data.len .. block_data.len + @sizeOf(u64)], nonce, .little);
+        std.mem.writeInt(u64, candidate[block_data.len..][0..@sizeOf(u64)], nonce, .little);
         if (hasLeadingZeroHex(sha3_256(candidate), difficulty)) return nonce;
     }
 }

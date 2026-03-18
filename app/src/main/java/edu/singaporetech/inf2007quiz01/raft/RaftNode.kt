@@ -253,12 +253,28 @@ class RaftNode(
                     when (val command = result.getOrNull()) {
                         is LocalCommand.Compute -> {
                             try {
-                                val localVote = WasmServiceBridge.computeViaWasm(
-                                    operator = command.operator,
-                                    a = command.a,
-                                    b = command.b,
-                                    instanceId = nodeId
-                                )
+                                // Use WASM dispatch if the Zig .so is loaded,
+                                // otherwise fall back to Kotlin arithmetic.
+                                // The Zig library embeds wasm3 and dispatches each
+                                // arithmetic op to a different WASM module (Go, C,
+                                // Zig, Rust).  When it's unavailable, we compute
+                                // in Kotlin like a normal person.
+                                val localVote = if (WasmServiceBridge.available) {
+                                    WasmServiceBridge.computeViaWasm(
+                                        operator = command.operator,
+                                        a = command.a,
+                                        b = command.b,
+                                        instanceId = nodeId
+                                    )
+                                } else {
+                                    when (command.operator) {
+                                        "+" -> command.a + command.b
+                                        "-" -> command.a - command.b
+                                        "*" -> command.a * command.b
+                                        "/" -> if (command.b != 0) command.a / command.b else 0
+                                        else -> 0
+                                    }
+                                }
 
                                 if (state.role == NodeRole.LEADER) {
                                     val entry = LogEntry(

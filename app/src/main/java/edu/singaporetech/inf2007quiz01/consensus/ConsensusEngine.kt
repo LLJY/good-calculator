@@ -16,6 +16,7 @@ import edu.singaporetech.inf2007quiz01.raft.RaftCluster
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
 
 /**
@@ -36,6 +37,17 @@ class ConsensusEngine(
     private val appContext = context.applicationContext
     private val pqcQuorum = PqcQuorum(appContext)
     val moodEngine = MoodEngine(appContext)
+
+    init {
+        // Kick off LLM model loading on a background thread.
+        // Qwen3-0.6B (205MB IQ1_S) extracts from assets on first launch,
+        // then loads via llama.cpp. If it fails, moods fall back to
+        // deterministic hash-based selection from a curated list.
+        @Suppress("OPT_IN_USAGE")
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            moodEngine.tryLoadModel()
+        }
+    }
 
     // --- Neural Arithmetic Verification ---
     // A TFLite model trained on 47 samples in PyTorch, smuggled through

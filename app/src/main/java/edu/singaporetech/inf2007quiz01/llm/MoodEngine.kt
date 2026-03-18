@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import org.nehuatl.llamacpp.LlamaAndroid
 import java.io.File
 
 /**
@@ -16,9 +17,9 @@ import java.io.File
  * The model generates a one-sentence "mood" for the CalBot based on the
  * calculation result.
  *
- * The model is ~400MB (Q4_K_M quantization) and downloads on first use
- * to app-private storage. On devices where the model isn't available,
- * moods fall back to a deterministic hash-based selection.
+ * The model is 205MB (IQ1_S quantization) bundled in assets.  On first
+ * launch it extracts to filesDir.  On devices where the model fails to
+ * load, moods fall back to a deterministic hash-based selection.
  *
  * This is a real transformer with 24 layers, 896-dim embeddings,
  * and 14 attention heads. Running on a phone. For calculator moods.
@@ -54,7 +55,8 @@ class MoodEngine(private val context: Context) {
     private val _currentMood = MutableStateFlow("awaiting first calculation")
     val currentMood: StateFlow<String> = _currentMood
 
-    private var llamaContext: Long = 0L
+    private var llama: LlamaAndroid? = null
+    private var contextId: Int = -1
     private var modelLoaded = false
 
     /**
@@ -64,13 +66,11 @@ class MoodEngine(private val context: Context) {
         try {
             val modelFile = File(context.filesDir, MODEL_FILENAME)
             if (!modelFile.exists()) {
-                // Copy from bundled assets to filesDir on first launch
-                // (llama.cpp needs a real file path, not an asset stream)
                 Log.d(TAG, "Extracting bundled Qwen3-0.6B IQ1_S (205MB) from APK assets...")
                 try {
                     context.assets.open(ASSET_MODEL_PATH).use { input ->
                         modelFile.outputStream().use { output ->
-                            input.copyTo(output, bufferSize = 8192)
+                            input.copyTo(output, bufferSize = 65536)
                         }
                     }
                     Log.d(TAG, "Model extracted to ${modelFile.absolutePath}")
@@ -80,19 +80,34 @@ class MoodEngine(private val context: Context) {
                 }
             }
 
-            // Load model via llama.cpp
-            val llama = Class.forName("com.ljcamargo.llamacpp.LlamaContext")
-            val loadMethod = llama.getMethod("load", String::class.java, Int::class.javaPrimitiveType)
-            llamaContext = loadMethod.invoke(null, modelFile.absolutePath, 512) as Long
+            // Load model via llamacpp-kotlin
+            val llamaInstance = LlamaAndroid(context.contentResolver)
+            val params = mapOf<String, Any>(
+                "model" to modelFile.absolutePath,
+                "n_ctx" to 256,    // small context — we only need a few tokens
+                "n_threads" to 2,  // don't melt the phone too hard
+                "use_mlock" to false,
+                "use_mmap" to true,
+            )
 
-            if (llamaContext != 0L) {
+            Log.d(TAG, "Loading Qwen3-0.6B via llamacpp-kotlin...")
+            val result = llamaInstance.startEngine(params) { logLine ->
+                Log.d(TAG, "llama.cpp: $logLine")
+            }
+
+            val ctxId = result?.get("contextId")
+            if (ctxId is Int || ctxId is Number) {
+                contextId = (ctxId as Number).toInt()
+                llama = llamaInstance
                 modelLoaded = true
-                Log.d(TAG, "Qwen3-0.6B loaded successfully. " +
+                Log.d(TAG, "Qwen3-0.6B loaded (contextId=$contextId). " +
                     "A 0.6B parameter transformer is now running on your phone " +
                     "to generate moods for a calculator.")
+            } else {
+                Log.d(TAG, "startEngine returned: $result — no contextId. Using fallback moods.")
             }
         } catch (e: Throwable) {
-            Log.d(TAG, "LLM not available: ${e.message}. Using fallback moods.")
+            Log.d(TAG, "LLM load failed: ${e.javaClass.simpleName}: ${e.message}. Using fallback moods.")
         }
     }
 
@@ -121,6 +136,8 @@ class MoodEngine(private val context: Context) {
         result: Int
     ): String = withContext(Dispatchers.IO) {
         try {
+            val llamaInstance = llama ?: return@withContext generateFallbackMood(calBotId, result)
+
             val prompt = buildString {
                 append("<|im_start|>system\n")
                 append("You are CalBot-$calBotId, a calculator bot. ")
@@ -131,16 +148,17 @@ class MoodEngine(private val context: Context) {
                 append("<|im_start|>assistant\n")
             }
 
-            // Use reflection to call llama.cpp predict
-            // This keeps the dependency soft — compiles even if the AAR isn't fully resolved
-            val llama = Class.forName("com.ljcamargo.llamacpp.LlamaContext")
-            val predictMethod = llama.getMethod("predict",
-                Long::class.javaPrimitiveType, String::class.java,
-                Int::class.javaPrimitiveType)
-            val raw = predictMethod.invoke(null, llamaContext, prompt, 20) as? String
+            val completionParams = mapOf<String, Any>(
+                "prompt" to prompt,
+                "n_predict" to 30,
+                "temperature" to 0.9f,
+                "stop" to arrayOf("<|im_end|>", "<|endoftext|>", "\n"),
+            )
+
+            val completionResult = llamaInstance.launchCompletion(contextId, completionParams)
+            val raw = completionResult?.get("text") as? String
                 ?: return@withContext generateFallbackMood(calBotId, result)
 
-            // Clean up the response
             raw.trim()
                 .removeSuffix("<|im_end|>")
                 .removeSuffix("<|endoftext|>")
@@ -169,14 +187,13 @@ class MoodEngine(private val context: Context) {
     }
 
     fun release() {
-        if (modelLoaded && llamaContext != 0L) {
+        if (modelLoaded && contextId >= 0) {
             try {
-                val llama = Class.forName("com.ljcamargo.llamacpp.LlamaContext")
-                val releaseMethod = llama.getMethod("release", Long::class.javaPrimitiveType)
-                releaseMethod.invoke(null, llamaContext)
+                llama?.releaseContext(contextId)
             } catch (_: Throwable) { }
             modelLoaded = false
-            llamaContext = 0L
+            llama = null
+            contextId = -1
         }
     }
 }

@@ -43,7 +43,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_NativeEngine_fib(
     env: *c.JNIEnv,
     _: c.jclass,
     n: c.jint,
-) callconv(.C) c.jint {
+) callconv(.c) c.jint {
     _ = env;
     const safe_n: u32 = if (n < 0) 0 else @intCast(n);
     return wrapI64ToI32(fibonacci.fastDoublingFib(safe_n));
@@ -53,7 +53,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_NativeEngine_half(
     env: *c.JNIEnv,
     _: c.jclass,
     x: c.jint,
-) callconv(.C) c.jint {
+) callconv(.c) c.jint {
     _ = env;
     return fibonacci.half(x);
 }
@@ -62,7 +62,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_NativeEngine_selfFn(
     env: *c.JNIEnv,
     _: c.jclass,
     x: c.jint,
-) callconv(.C) c.jint {
+) callconv(.c) c.jint {
     _ = env;
     return fibonacci.selfFn(x);
 }
@@ -71,7 +71,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_NativeEngine_evaluate(
     env: *c.JNIEnv,
     _: c.jclass,
     expr: c.jstring,
-) callconv(.C) c.jint {
+) callconv(.c) c.jint {
     const fns = env.*.*;
     const chars = fns.GetStringUTFChars.?(env, expr, null) orelse return jint_min;
     defer fns.ReleaseStringUTFChars.?(env, expr, chars);
@@ -86,7 +86,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_WasmServiceBridge_computeViaW
     a: c.jint,
     b: c.jint,
     instance_id: c.jint,
-) callconv(.C) c.jint {
+) callconv(.c) c.jint {
     _ = instance_id;
 
     const fns = env.*.*;
@@ -101,7 +101,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_WasmServiceBridge_formatLedge
     env: *c.JNIEnv,
     _: c.jclass,
     json_data: c.jstring,
-) callconv(.C) c.jstring {
+) callconv(.c) c.jstring {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -109,14 +109,14 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_WasmServiceBridge_formatLedge
     const chars = fns.GetStringUTFChars.?(env, json_data, null) orelse return null;
     defer fns.ReleaseStringUTFChars.?(env, json_data, chars);
 
-    const formatted = wasm_dispatch.formatLedgerAlloc(arena.allocator(), std.mem.span(chars)) orelse return null;
-    return newJavaString(env, arena.allocator(), formatted);
+    const formatted: []const u8 = wasm_dispatch.formatLedgerAlloc(arena.allocator(), std.mem.span(chars)) orelse return null;
+    return newJavaString(env, arena.allocator(), formatted) orelse return null;
 }
 
 pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_generateKeypair(
     env: *c.JNIEnv,
     _: c.jclass,
-) callconv(.C) c.jstring {
+) callconv(.c) c.jstring {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -125,14 +125,16 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_generateKeyp
 
     if (!pqc_signer.generateKeypair(&priv_buf, &pub_buf)) return null;
 
-    const payload = .{
-        .privateKeyPem = std.mem.sliceTo(priv_buf[0..], 0),
-        .publicKeyPem = std.mem.sliceTo(pub_buf[0..], 0),
-    };
+    const priv_pem = std.mem.sliceTo(priv_buf[0..], 0);
+    const pub_pem = std.mem.sliceTo(pub_buf[0..], 0);
 
-    var json: std.ArrayListUnmanaged(u8) = .empty;
-    std.json.stringify(payload, .{}, json.writer(arena.allocator())) catch return null;
-    return newJavaString(env, arena.allocator(), json.items);
+    // Build JSON manually — Zig 0.15 json API is streaming-only
+    const json_str = std.fmt.allocPrint(
+        arena.allocator(),
+        "{{\"privateKeyPem\":\"{s}\",\"publicKeyPem\":\"{s}\"}}",
+        .{ priv_pem, pub_pem },
+    ) catch return null;
+    return newJavaString(env, arena.allocator(), json_str) orelse return null;
 }
 
 pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_signBlock(
@@ -140,7 +142,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_signBlock(
     _: c.jclass,
     block_data: c.jbyteArray,
     privkey_pem: c.jstring,
-) callconv(.C) c.jbyteArray {
+) callconv(.c) c.jbyteArray {
     const fns = env.*.*;
     const key_chars = fns.GetStringUTFChars.?(env, privkey_pem, null) orelse return null;
     defer fns.ReleaseStringUTFChars.?(env, privkey_pem, key_chars);
@@ -152,7 +154,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_signBlock(
     const block_bytes: []const u8 = @as([*]const u8, @ptrCast(block_raw))[0..block_len];
     var sig_buf: [8192]u8 = undefined;
     const sig_len = pqc_signer.sign(block_bytes, std.mem.span(key_chars), &sig_buf) orelse return null;
-    return newJavaByteArray(env, sig_buf[0..sig_len]);
+    return newJavaByteArray(env, sig_buf[0..sig_len]) orelse return null;
 }
 
 pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_verifySignature(
@@ -161,7 +163,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_verifySignat
     block_data: c.jbyteArray,
     signature: c.jbyteArray,
     pubkey_pem: c.jstring,
-) callconv(.C) c.jboolean {
+) callconv(.c) c.jboolean {
     const fns = env.*.*;
     const key_chars = fns.GetStringUTFChars.?(env, pubkey_pem, null) orelse return 0;
     defer fns.ReleaseStringUTFChars.?(env, pubkey_pem, key_chars);
@@ -184,7 +186,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_sha3Hash(
     env: *c.JNIEnv,
     _: c.jclass,
     block_data: c.jbyteArray,
-) callconv(.C) c.jstring {
+) callconv(.c) c.jstring {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -195,7 +197,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_sha3Hash(
 
     const block_bytes: []const u8 = @as([*]const u8, @ptrCast(block_raw))[0..block_len];
     const hex = blockchain.sha3_256_hex(block_bytes);
-    return newJavaString(env, arena.allocator(), &hex);
+    return newJavaString(env, arena.allocator(), &hex) orelse return null;
 }
 
 pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_mineBlock(
@@ -203,7 +205,7 @@ pub export fn Java_edu_singaporetech_inf2007quiz01_BlockchainBridge_mineBlock(
     _: c.jclass,
     block_data: c.jbyteArray,
     difficulty: c.jint,
-) callconv(.C) c.jlong {
+) callconv(.c) c.jlong {
     const fns = env.*.*;
     const block_len: usize = @intCast(fns.GetArrayLength.?(env, block_data));
     const block_raw = fns.GetByteArrayElements.?(env, block_data, null) orelse return 0;

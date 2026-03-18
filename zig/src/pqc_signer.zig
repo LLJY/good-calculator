@@ -41,10 +41,10 @@ pub fn generateKeypair(privkey_buf: []u8, pubkey_buf: []u8) bool {
     defer if (pkey) |key| c.EVP_PKEY_free(key);
 
     const priv_bio = c.BIO_new(c.BIO_s_mem()) orelse return false;
-    defer c.BIO_free(priv_bio);
+    defer _ = c.BIO_free(priv_bio);
 
     const pub_bio = c.BIO_new(c.BIO_s_mem()) orelse return false;
-    defer c.BIO_free(pub_bio);
+    defer _ = c.BIO_free(pub_bio);
 
     if (c.PEM_write_bio_PrivateKey(priv_bio, pkey, null, null, 0, null, null) != 1) return false;
     if (c.PEM_write_bio_PUBKEY(pub_bio, pkey) != 1) return false;
@@ -54,7 +54,7 @@ pub fn generateKeypair(privkey_buf: []u8, pubkey_buf: []u8) bool {
 
 pub fn sign(data: []const u8, privkey_pem: []const u8, sig_buf: []u8) ?usize {
     const bio = bioFromPem(privkey_pem) orelse return null;
-    defer c.BIO_free(bio);
+    defer _ = c.BIO_free(bio);
 
     const pkey = c.PEM_read_bio_PrivateKey(bio, null, null, null) orelse return null;
     defer c.EVP_PKEY_free(pkey);
@@ -74,7 +74,7 @@ pub fn sign(data: []const u8, privkey_pem: []const u8, sig_buf: []u8) ?usize {
 
 pub fn verify(data: []const u8, sig: []const u8, pubkey_pem: []const u8) bool {
     const bio = bioFromPem(pubkey_pem) orelse return false;
-    defer c.BIO_free(bio);
+    defer _ = c.BIO_free(bio);
 
     const pkey = c.PEM_read_bio_PUBKEY(bio, null, null, null) orelse return false;
     defer c.EVP_PKEY_free(pkey);
